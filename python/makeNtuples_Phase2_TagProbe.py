@@ -5,20 +5,82 @@ from DataFormats.FWLite import Events, Handle
 import argparse
 import glob
 import os
+import math
+
+def calculate_invariant_mass(e1, e2):
+    """Calculate invariant mass of two electrons using their 4-momenta"""
+    # Get 4-momenta
+    eta1, phi1, e1_val = e1.eta(), e1.phi(), e1.energy()
+    eta2, phi2, e2_val = e2.eta(), e2.phi(), e2.energy()
+    
+    # Calculate px, py, pz for each electron
+    pt1 = e1.et() / math.cosh(eta1) if abs(eta1) < 10 else e1.et()
+    pt2 = e2.et() / math.cosh(eta2) if abs(eta2) < 10 else e2.et()
+    
+    px1 = pt1 * math.cos(phi1)
+    py1 = pt1 * math.sin(phi1)
+    pz1 = pt1 * math.sinh(eta1)
+    
+    px2 = pt2 * math.cos(phi2)
+    py2 = pt2 * math.sin(phi2)
+    pz2 = pt2 * math.sinh(eta2)
+    
+    # Calculate invariant mass: M^2 = (E1 + E2)^2 - (p1 + p2)^2
+    e_tot = e1_val + e2_val
+    px_tot = px1 + px2
+    py_tot = py1 + py2
+    pz_tot = pz1 + pz2
+    
+    m2 = e_tot * e_tot - (px_tot * px_tot + py_tot * py_tot + pz_tot * pz_tot)
+    return math.sqrt(max(0.0, m2))
+
+def get_charge(obj):
+    """Try to get charge from electron object"""
+    try:
+        # Try to get charge from GSF track if available
+        if hasattr(obj, 'gsfTrack') and obj.gsfTrack().isNonnull():
+            return obj.gsfTrack().charge()
+        # Try to get from best track
+        if hasattr(obj, 'bestTrack') and obj.bestTrack().isNonnull():
+            return obj.bestTrack().charge()
+    except:
+        pass
+    return 0  # Return 0 if charge cannot be determined
+
+def is_tag_electron(obj, tag_et_min=30.0):
+    """Tag selection: tight criteria for well-identified electrons"""
+    # Basic kinematic cuts
+    if obj.et() < tag_et_min:
+        return False
+    
+    # Additional tag criteria can be added here
+    # For example: tight ID cuts, isolation requirements, etc.
+    # For now, we use ET cut as the main tag requirement
+    
+    return True
+
+def is_probe_electron(obj, probe_et_min=10.0):
+    """Probe selection: looser criteria"""
+    # Basic kinematic cuts
+    if obj.et() < probe_et_min:
+        return False
+    
+    # Probe can have looser selection - just basic ET requirement
+    return True
 
 def main():
     # Set up argument parser
     parser = argparse.ArgumentParser(
-        description="Create debug ntuples for E/Gamma trigger objects from Phase2 data",
+        description="Create debug ntuples for E/Gamma trigger objects with Tag-and-Probe selection",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 makeNtuples_Phase2.py input.root -o output.root
-  python3 makeNtuples_Phase2.py --output output.root input.root
-  python3 makeNtuples_Phase2.py --max-events 100 -o output.root input.root
-  python3 makeNtuples_Phase2.py --input-dir /path/to/files/ -o output.root
-  python3 makeNtuples_Phase2.py --input-pattern "*.root" -o output.root
-  python3 makeNtuples_Phase2.py --help
+  python3 makeNtuples_Phase2_TagProbe.py input.root -o output.root
+  python3 makeNtuples_Phase2_TagProbe.py --output output.root input.root
+  python3 makeNtuples_Phase2_TagProbe.py --max-events 100 -o output.root input.root
+  python3 makeNtuples_Phase2_TagProbe.py --input-dir /path/to/files/ -o output.root
+  python3 makeNtuples_Phase2_TagProbe.py --input-pattern "*.root" -o output.root
+  python3 makeNtuples_Phase2_TagProbe.py --help
         """
     )
     
@@ -40,6 +102,18 @@ Examples:
     parser.add_argument("--verbose", "-v", 
                        action="store_true",
                        help="Enable verbose output")
+    parser.add_argument("--tag-et-min", 
+                       type=float, default=30.0,
+                       help="Minimum ET for tag electron (default: 30.0 GeV)")
+    parser.add_argument("--probe-et-min", 
+                       type=float, default=10.0,
+                       help="Minimum ET for probe electron (default: 10.0 GeV)")
+    parser.add_argument("--mass-min", 
+                       type=float, default=60.0,
+                       help="Minimum invariant mass for tag-probe pair (default: 60.0 GeV)")
+    parser.add_argument("--mass-max", 
+                       type=float, default=120.0,
+                       help="Maximum invariant mass for tag-probe pair (default: 120.0 GeV)")
     
     args = parser.parse_args()
     
@@ -103,12 +177,19 @@ Examples:
     output_file = args.output
     max_events = args.max_events
     verbose = args.verbose
+    tag_et_min = args.tag_et_min
+    probe_et_min = args.probe_et_min
+    mass_min = args.mass_min
+    mass_max = args.mass_max
     
     print(f"📁 Found {len(input_files)} input files:")
     for f in input_files:
         print(f"   {f}")
     print(f"💾 Output will be saved to: {output_file}")
     print(f"⚡ Processing up to {max_events} events")
+    print(f"🏷️  Tag selection: ET > {tag_et_min} GeV")
+    print(f"🔍 Probe selection: ET > {probe_et_min} GeV")
+    print(f"📊 Mass window: {mass_min} - {mass_max} GeV")
     if verbose:
         print("🔍 Verbose mode enabled")
     
@@ -118,14 +199,14 @@ Examples:
     
     # Create output file and tree
     out_file = ROOT.TFile(output_file, "RECREATE")
-    tree = ROOT.TTree("egHLTTree", "EGamma Tree")
+    tree = ROOT.TTree("egHLTTree", "EGamma Tree - Tag and Probe")
     
     # Create variables for the tree
     run = ROOT.std.vector("int")()
     lumi = ROOT.std.vector("int")()
     event = ROOT.std.vector("int")()
     
-    # E/Gamma object variables
+    # E/Gamma object variables (for probe electrons only)
     eg_et = ROOT.std.vector("float")()
     eg_energy = ROOT.std.vector("float")()
     eg_eta = ROOT.std.vector("float")()
@@ -191,6 +272,14 @@ Examples:
     eg_ecalPFIsol = ROOT.std.vector("float")()
     eg_hcalPFIsol = ROOT.std.vector("float")()
     eg_trkIsolV6 = ROOT.std.vector("float")()
+    
+    # Tag-Probe specific variables
+    tag_et = ROOT.std.vector("float")()
+    tag_eta = ROOT.std.vector("float")()
+    tag_phi = ROOT.std.vector("float")()
+    tag_charge = ROOT.std.vector("int")()
+    probe_charge = ROOT.std.vector("int")()
+    inv_mass = ROOT.std.vector("float")()
     
     # Collection info
     collection_name = ROOT.std.vector("string")()
@@ -265,6 +354,15 @@ Examples:
     tree.Branch("eg_ecalPFIsol", eg_ecalPFIsol)
     tree.Branch("eg_hcalPFIsol", eg_hcalPFIsol)
     tree.Branch("eg_trkIsolV6", eg_trkIsolV6)
+    
+    # Tag-Probe branches
+    tree.Branch("tag_et", tag_et)
+    tree.Branch("tag_eta", tag_eta)
+    tree.Branch("tag_phi", tag_phi)
+    tree.Branch("tag_charge", tag_charge)
+    tree.Branch("probe_charge", probe_charge)
+    tree.Branch("inv_mass", inv_mass)
+    
     tree.Branch("collection_name", collection_name)
     tree.Branch("nr_objects", nr_objects)
     
@@ -348,6 +446,15 @@ Examples:
         eg_ecalPFIsol.clear()
         eg_hcalPFIsol.clear()
         eg_trkIsolV6.clear()
+        
+        # Clear Tag-Probe vectors
+        tag_et.clear()
+        tag_eta.clear()
+        tag_phi.clear()
+        tag_charge.clear()
+        probe_charge.clear()
+        inv_mass.clear()
+        
         collection_name.clear()
         nr_objects.clear()
         
@@ -384,89 +491,160 @@ Examples:
                 
                 if handle.isValid():
                     egobjs = handle.product()
-                    print(f"  ✓ Found {egobjs.size()} objects")
+                    total_objects = egobjs.size()
+                    print(f"  ✓ Found {total_objects} objects")
                     
-                    if egobjs.size() > 0:
-                        # Store collection info
-                        collection_name.push_back(col_name)
-                        nr_objects.push_back(egobjs.size())
-                        
-                        # Process each object
-                        for j, obj in enumerate(egobjs):
+                    if total_objects < 2:
+                        if verbose:
+                            print(f"    → Need at least 2 objects for tag-probe, skipping event")
+                        continue
+                    
+                    # Identify tag and probe candidates
+                    tags = []
+                    probes = []
+                    
+                    for j, obj in enumerate(egobjs):
+                        obj_charge = get_charge(obj)
+                        if is_tag_electron(obj, tag_et_min):
+                            tags.append((j, obj, obj_charge))
+                        if is_probe_electron(obj, probe_et_min):
+                            probes.append((j, obj, obj_charge))
+                    
+                    if verbose:
+                        print(f"    → Found {len(tags)} tag candidates and {len(probes)} probe candidates")
+                    
+                    # Match tag-probe pairs
+                    probe_count = 0
+                    for tag_idx, tag_obj, tag_chg in tags:
+                        for probe_idx, probe_obj, probe_chg in probes:
+                            # Skip if same object
+                            if tag_idx == probe_idx:
+                                continue
                             
-                            # Basic properties
-                            eg_et.push_back(obj.et())
-                            eg_energy.push_back(obj.energy())
-                            eg_eta.push_back(obj.eta())
-                            eg_phi.push_back(obj.phi())
+                            # Require opposite charge (if charge is available)
+                            if tag_chg != 0 and probe_chg != 0:
+                                if tag_chg * probe_chg > 0:  # Same sign
+                                    if verbose:
+                                        print(f"    → Skipping pair: same charge (tag={tag_chg}, probe={probe_chg})")
+                                    continue
+                            
+                            # Calculate invariant mass
+                            mass = calculate_invariant_mass(tag_obj, probe_obj)
+                            
+                            # Check mass window
+                            if mass < mass_min or mass > mass_max:
+                                if verbose:
+                                    print(f"    → Skipping pair: mass={mass:.2f} GeV (outside {mass_min}-{mass_max} GeV window)")
+                                continue
+                            
+                            # Found a valid tag-probe pair! Store probe electron
+                            if verbose:
+                                print(f"    → Valid tag-probe pair found: mass={mass:.2f} GeV, tag ET={tag_obj.et():.2f} GeV, probe ET={probe_obj.et():.2f} GeV")
+                            
+                            probe_count += 1
+                            
+                            # Store tag information
+                            tag_et.push_back(tag_obj.et())
+                            tag_eta.push_back(tag_obj.eta())
+                            tag_phi.push_back(tag_obj.phi())
+                            tag_charge.push_back(tag_chg)
+                            probe_charge.push_back(probe_chg)
+                            inv_mass.push_back(mass)
+                            
+                            # Store probe electron properties
+                            eg_et.push_back(probe_obj.et())
+                            eg_energy.push_back(probe_obj.energy())
+                            eg_eta.push_back(probe_obj.eta())
+                            eg_phi.push_back(probe_obj.phi())
                             
                             # SuperCluster properties
-                            eg_nrClus.push_back(obj.superCluster().clusters().size())
-                            eg_rawEnergy.push_back(obj.superCluster().rawEnergy())
-                            eg_phiWidth.push_back(obj.superCluster().phiWidth())
-                            eg_seedId.push_back(obj.superCluster().seed().seed().rawId())
-                            eg_seedDet.push_back(obj.superCluster().seed().seed().det())                                                                           
+                            eg_nrClus.push_back(probe_obj.superCluster().clusters().size())
+                            eg_rawEnergy.push_back(probe_obj.superCluster().rawEnergy())
+                            eg_phiWidth.push_back(probe_obj.superCluster().phiWidth())
+                            eg_seedId.push_back(probe_obj.superCluster().seed().seed().rawId())
+                            eg_seedDet.push_back(probe_obj.superCluster().seed().seed().det())                                                                           
                                                                    
                             # HLT variables - try different naming conventions
-                            eg_sigmaIEtaIEta.push_back(obj.var("hltEgammaClusterShapeUnseeded_sigmaIEtaIEta5x5",0))
-                            eg_ecalPFIsol_default.push_back(obj.var("hltEgammaEcalPFClusterIsoUnseeded",0))
-                            eg_hcalPFIsol_default.push_back(obj.var("hltEgammaHcalPFClusterIsoUnseeded",0))
-                            eg_hgcalPFIsol_default.push_back(obj.var("hltEgammaHGCalPFClusterIsoUnseeded",0))
-                            eg_trkIsolV0_default.push_back(obj.var("hltEgammaEleGsfTrackIsoUnseeded",0))
-                            eg_trkIsolV6_default.push_back(obj.var("hltEgammaEleGsfTrackIsoV6Unseeded",0))
-                            eg_trkIsolV72_default.push_back(obj.var("hltEgammaEleGsfTrackIsoV72Unseeded",0))
-                            eg_trkChi2_default.push_back(obj.var("hltEgammaGsfTrackVarsUnseeded_Chi2",0))
-                            #eg_trkMissHits.push_back(obj.var("hltEgammaGsfTrackVarsUnseeded_MissingHits",0))
-                            #eg_trkValidHits.push_back(obj.var("hltEgammaGsfTrackVarsUnseeded_ValidHits",0))
-                            eg_invESeedInvP.push_back(obj.var("hltEgammaGsfTrackVarsUnseeded_OneOESeedMinusOneOP",0))
-                            eg_invEInvP.push_back(obj.var("hltEgammaGsfTrackVarsUnseeded_OneOESuperMinusOneOP",0))
-                            eg_trkDEta.push_back(obj.var("hltEgammaGsfTrackVarsUnseeded_Deta",0))
-                            #eg_trkDEtaSeed.push_back(obj.var("hltEgammaGsfTrackVarsUnseeded_DetaSeed",0))
-                            #eg_trkDPhi.push_back(obj.var("hltEgammaGsfTrackVarsUnseeded_Dphi",0))
-                            #eg_trkNrLayerIT.push_back(obj.var("hltEgammaGsfTrackVarsUnseeded_NLayerIT",0))
-                            #eg_rVar.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_rVar",0))
+                            eg_sigmaIEtaIEta.push_back(probe_obj.var("hltEgammaClusterShapeUnseeded_sigmaIEtaIEta5x5",0))
+                            eg_ecalPFIsol_default.push_back(probe_obj.var("hltEgammaEcalPFClusterIsoUnseeded",0))
+                            eg_hcalPFIsol_default.push_back(probe_obj.var("hltEgammaHcalPFClusterIsoUnseeded",0))
+                            eg_hgcalPFIsol_default.push_back(probe_obj.var("hltEgammaHGCalPFClusterIsoUnseeded",0))
+                            eg_trkIsolV0_default.push_back(probe_obj.var("hltEgammaEleGsfTrackIsoUnseeded",0))
+                            eg_trkIsolV6_default.push_back(probe_obj.var("hltEgammaEleGsfTrackIsoV6Unseeded",0))
+                            eg_trkIsolV72_default.push_back(probe_obj.var("hltEgammaEleGsfTrackIsoV72Unseeded",0))
+                            eg_trkChi2_default.push_back(probe_obj.var("hltEgammaGsfTrackVarsUnseeded_Chi2",0))
+                            #eg_trkMissHits.push_back(probe_obj.var("hltEgammaGsfTrackVarsUnseeded_MissingHits",0))
+                            #eg_trkValidHits.push_back(probe_obj.var("hltEgammaGsfTrackVarsUnseeded_ValidHits",0))
+                            eg_invESeedInvP.push_back(probe_obj.var("hltEgammaGsfTrackVarsUnseeded_OneOESeedMinusOneOP",0))
+                            eg_invEInvP.push_back(probe_obj.var("hltEgammaGsfTrackVarsUnseeded_OneOESuperMinusOneOP",0))
+                            eg_trkDEta.push_back(probe_obj.var("hltEgammaGsfTrackVarsUnseeded_Deta",0))
+                            #eg_trkDEtaSeed.push_back(probe_obj.var("hltEgammaGsfTrackVarsUnseeded_DetaSeed",0))
+                            #eg_trkDPhi.push_back(probe_obj.var("hltEgammaGsfTrackVarsUnseeded_Dphi",0))
+                            #eg_trkNrLayerIT.push_back(probe_obj.var("hltEgammaGsfTrackVarsUnseeded_NLayerIT",0))
+                            #eg_rVar.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_rVar",0))
                             
-                            eg_sigma2uu.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2uu",0))
-                            eg_sigma2vv.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2vv",0))
-                            eg_sigma2ww.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2ww",0))
-                            eg_sigma2xx.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2xx",0))
-                            eg_sigma2xy.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2xy",0))
-                            eg_sigma2yy.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2yy",0))
-                            eg_sigma2yz.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2yz",0))
-                            eg_sigma2zx.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2zx",0))
-                            eg_sigma2zz.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2zz",0))
-                            eg_pms2_default.push_back(obj.var("hltEgammaPixelMatchVarsUnseeded_s2",0))
-                            eg_hcalHForHoverE.push_back(obj.var("hltEgammaHGCALIDVarsUnseeded_hForHOverE",0))
+                            eg_sigma2uu.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2uu",0))
+                            eg_sigma2vv.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2vv",0))
+                            eg_sigma2ww.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2ww",0))
+                            eg_sigma2xx.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2xx",0))
+                            eg_sigma2xy.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2xy",0))
+                            eg_sigma2yy.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2yy",0))
+                            eg_sigma2yz.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2yz",0))
+                            eg_sigma2zx.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2zx",0))
+                            eg_sigma2zz.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_sigma2zz",0))
+                            eg_pms2_default.push_back(probe_obj.var("hltEgammaPixelMatchVarsUnseeded_s2",0))
+                            eg_hcalHForHoverE.push_back(probe_obj.var("hltEgammaHGCALIDVarsUnseeded_hForHOverE",0))
                             
-                            eg_l1TrkIsoCMSSW.push_back(obj.var("hltEgammaHoverEUnseeded",0))
-                            eg_bestTrkChi2.push_back(obj.var("hltEgammaEleL1TrkIsoUnseeded",0))
-                            eg_bestTrkDEta.push_back(obj.var("hltEgammaBestGsfTrackVarsUnseeded_Chi2",0))
-                            eg_bestTrkDEtaSeed.push_back(obj.var("hltEgammaBestGsfTrackVarsUnseeded_Deta",0))
-                            eg_bestTrkDPhi.push_back(obj.var("hltEgammaBestGsfTrackVarsUnseeded_DetaSeed",0))
-                            #eg_bestTrkMissHits.push_back(obj.var("hltEgammaBestGsfTrackVarsUnseeded_Dphi",0))
-                            #eg_bestTrkNrLayerIT.push_back(obj.var("hltEgammaBestGsfTrackVarsUnseeded_MissingHits",0))
-                            eg_bestTrkESeedInvP.push_back(obj.var("hltEgammaBestGsfTrackVarsUnseeded_NLayerIT",0))
-                            eg_bestTrkInvEInvP.push_back(obj.var("hltEgammaBestGsfTrackVarsUnseeded_OneOESeedMinusOneOP",0))
-                            #eg_bestTrkValitHits.push_back(obj.var("hltEgammaBestGsfTrackVarsUnseeded_OneOESuperMinusOneOP",0))
-                            eg_hgcaliso_layerclus.push_back(obj.var("hltEgammaBestGsfTrackVarsUnseeded_ValidHits",0))
-                            eg_hgcaliso_layerclusem.push_back(obj.var("hltEgammaHGCalLayerClusterIsoUnseeded",0))
-                            eg_hgcaliso_layerclushad.push_back(obj.var("hltEgammaHGCalLayerClusterIsoUnseeded_em",0))
-                                                                                    
+                            eg_l1TrkIsoCMSSW.push_back(probe_obj.var("hltEgammaHoverEUnseeded",0))
+                            eg_bestTrkChi2.push_back(probe_obj.var("hltEgammaEleL1TrkIsoUnseeded",0))
+                            eg_bestTrkDEta.push_back(probe_obj.var("hltEgammaBestGsfTrackVarsUnseeded_Chi2",0))
+                            eg_bestTrkDEtaSeed.push_back(probe_obj.var("hltEgammaBestGsfTrackVarsUnseeded_Deta",0))
+                            eg_bestTrkDPhi.push_back(probe_obj.var("hltEgammaBestGsfTrackVarsUnseeded_DetaSeed",0))
+                            #eg_bestTrkMissHits.push_back(probe_obj.var("hltEgammaBestGsfTrackVarsUnseeded_Dphi",0))
+                            #eg_bestTrkNrLayerIT.push_back(probe_obj.var("hltEgammaBestGsfTrackVarsUnseeded_MissingHits",0))
+                            eg_bestTrkESeedInvP.push_back(probe_obj.var("hltEgammaBestGsfTrackVarsUnseeded_NLayerIT",0))
+                            eg_bestTrkInvEInvP.push_back(probe_obj.var("hltEgammaBestGsfTrackVarsUnseeded_OneOESeedMinusOneOP",0))
+                            #eg_bestTrkValitHits.push_back(probe_obj.var("hltEgammaBestGsfTrackVarsUnseeded_OneOESuperMinusOneOP",0))
+                            eg_hgcaliso_layerclus.push_back(probe_obj.var("hltEgammaBestGsfTrackVarsUnseeded_ValidHits",0))
+                            eg_hgcaliso_layerclusem.push_back(probe_obj.var("hltEgammaHGCalLayerClusterIsoUnseeded",0))
+                            eg_hgcaliso_layerclushad.push_back(probe_obj.var("hltEgammaHGCalLayerClusterIsoUnseeded_em",0))
+                            
+                            # Only process first valid pair per event (can be modified to process all pairs)
+                            break
+                        
+                        if probe_count > 0:
+                            break  # Found a valid pair, move to next tag
+                    
+                    # Store collection info
+                    collection_name.push_back(col_name)
+                    nr_objects.push_back(probe_count)
+                    
+                    if probe_count > 0:
+                        if verbose:
+                            print(f"    → Stored {probe_count} probe electron(s) from tag-probe pairs")
                         # Fill tree for this collection
                         tree.Fill()
                         break  # Found a working collection, stop trying others
-                        
+                    else:
+                        if verbose:
+                            print(f"    → No valid tag-probe pairs found")
+                                                                                    
                 else:
                     print(f"  ✗ Invalid handle for {label}")
                     
             except Exception as e:
                 print(f"  ✗ Error accessing {label}: {e}")
+                import traceback
+                if verbose:
+                    traceback.print_exc()
     
     # Write and close
     out_file.Write()
     out_file.Close()
     print(f"\n✅ Debug ntuple saved to: {output_file}")
     print("You can open this file in ROOT to inspect the variables:")
+    print("Note: Only probe electrons from valid tag-probe pairs are stored.")
 
 if __name__ == "__main__":
     main() 
+
