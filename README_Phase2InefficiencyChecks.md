@@ -15,7 +15,11 @@ condor_submit Farm/condor_jobs.sub
 
 ### Plotting
 ```
-
+python3 ../plot_Phase2_EGM_Sigma_PtRanges.py /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/ZprimeToEE_ntuple.root SigmaPtBins
+python3 plot_Phase2_EGM_Variables.py \
+  /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/ZprimeToEE_ntuple.root \
+  /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/QCD_ntuple.root  \
+  Comparison "Z'#rightarrow ee" "QCD"
 ```
 
 ## For Trigger Efficinecy Checks
