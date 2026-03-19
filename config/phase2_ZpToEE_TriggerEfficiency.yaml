@@ -12,7 +12,7 @@ project:
       - cmsRun rerunL1_cfg.py
       - cmsDriver.py Phase2 -s L1P2GT,HLT:75e33 --processName=HLTX --conditions auto:phase2_realistic_T33 --geometry ExtendedRun4D110 --era Phase2C17I13M9 --eventcontent FEVTDEBUGHLT --customise SLHCUpgradeSimulations/Configuration/aging.customise_aging_1000,HLTrigger/Configuration/customizeHLTforEGamma.customiseEGammaMenuDev --filein file:output_Phase2_L1T.root --inputCommands='keep *, drop *_hlt*_*_HLT, drop triggerTriggerFilterObjectWithRefs_l1t*_*_HLT' --mc --no_exec --python_filename rerunHLT_cfg.py --fileout file:output_Phase2_HLT.root
       - cmsRun rerunHLT_cfg.py
-      - python3 /afs/cern.ch/work/s/ssaumya/private/Egamma/Upgrade/InefficiencyChecls/3rdFeb_2026/CMSSW_16_0_2/src/lastFilterEfficiency_Upgrade.py output_Phase2_HLT.root --max-events 100000 -o tnpNtupler.root
+      - python3 /afs/cern.ch/work/s/ssaumya/private/Egamma/Upgrade/InefficiencyChecls/3rdFeb_2026/CMSSW_16_0_2/src/lastFilterEfficiency_Upgrade.py --input-file output_Phase2_HLT.root -n 100000 -o tnpNtupler.root
 
     storefile:
       - tnpNtupler.root        

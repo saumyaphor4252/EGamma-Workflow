@@ -22,6 +22,12 @@ python3 plot_Phase2_EGM_Variables.py \
   Comparison "Z'#rightarrow ee" "QCD"
 ```
 
+### SB Optimization
+```
+python3 CutOptimization.py --signal /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/tnpNtupler_ZprimeToEE.root --background /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/tnpNtupler_QCD.root -t egHLTTree --target-eff 0.75 --pt-bins "30,5000" --var eg_sigma2vv --pt-var eg_et --var-min 1e-9
+
+python3 CutOptimization.py --signal /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/tnpNtupler_ZprimeToEE.root --background /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/tnpNtupler_QCD.root -t egHLTTree --target-eff 0.75 --pt-bins "30,400 400,1200 1200,5000" --var eg_sigma2vv --pt-var eg_et --var-min 1e-9
+```
 ## For Trigger Efficinecy Checks
 ```
 
