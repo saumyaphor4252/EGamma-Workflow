@@ -1,6 +1,7 @@
 import os
 import yaml
 import argparse
+import subprocess
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Prepare Condor jobs from a placeholder-based YAML config.")
@@ -48,6 +49,21 @@ def substitute_job_tokens(cmd: str, job_idx: int) -> str:
     return out
 
 
+def run_prepare_once(commands, cmssw_dir: str) -> None:
+    """
+    Run heavy/shared setup commands once (outside Condor jobs), e.g. curl + scram b.
+    This avoids many jobs racing in the same CMSSW area.
+    """
+    if not commands:
+        return
+    print(f"\n🔧 Running {len(commands)} prepare-once command(s) in {cmssw_dir}")
+    setup = f"cd {cmssw_dir} && eval `scramv1 runtime -sh` && "
+    for idx, cmd in enumerate(commands, start=1):
+        full_cmd = setup + cmd
+        print(f"   [{idx}/{len(commands)}] {cmd}")
+        subprocess.run(full_cmd, shell=True, check=True, executable="/bin/bash")
+
+
 # -------------------------------
 # MAIN LOOP
 # -------------------------------
@@ -58,6 +74,19 @@ for project_name, project_cfg in cfg["project"].items():
 
     farm_dir = os.path.join(args.farm, project_name)
     os.makedirs(farm_dir, exist_ok=True)
+
+    process_commands = list(project_cfg["process"])
+    prepare_once_cmds = []
+    filtered_process_cmds = []
+    for cmd in process_commands:
+        stripped = cmd.strip()
+        if stripped.startswith("curl ") or stripped.startswith("scram b"):
+            prepare_once_cmds.append(cmd)
+        else:
+            filtered_process_cmds.append(cmd)
+
+    # Execute shared build/setup commands once to avoid per-job races.
+    run_prepare_once(prepare_once_cmds, cmssw_dir)
 
     for job_idx in range(n_jobs):
         script_name = os.path.join(farm_dir, f"run_{project_name}_{job_idx}.sh")
@@ -81,7 +110,7 @@ for project_name, project_cfg in cfg["project"].items():
             f.write(f"cd {cmssw_dir}\n")
             f.write("eval `scramv1 runtime -sh`\n\n")
 
-            for i, cmd in enumerate(project_cfg["process"]):
+            for i, cmd in enumerate(filtered_process_cmds):
                 cmd_tmp = substitute_job_tokens(cmd, job_idx)
                 cmd_tmp = cmd_tmp.replace("file:", "file:$WORKDIR/")
 

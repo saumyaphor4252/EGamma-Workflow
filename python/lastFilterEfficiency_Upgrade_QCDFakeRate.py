@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Run: python3 lastFilterEfficiency_Upgrade.py --input-file inputFile.root -o outFile.root
+# Run: python3 lastFilterEfficiency_Upgrade_QCDFakeRate.py --input-file inputFile.root -o outFile.root
 # Condor: one input file → one output file in current dir (so cp *.root finds it). 
 
 from array import array
@@ -24,8 +24,11 @@ import os
 # Constants
 EB_ETA_MAX = 1.44
 EE_ETA_MIN = 1.56
-MIN_GEN_PT = 25.
+MIN_ELE_PT = 10.
 MAX_DR = 0.1
+LOOSE_ID_NAMES = [
+    "cutBasedElectronID-Winter22-122X-V1-loose",
+]
 
 # Configure logging
 logging.basicConfig(
@@ -140,7 +143,7 @@ def get_genparts(genparts: Any, pid: int = 11, antipart: bool = True, status: in
                     selected.append(part)
     return selected
 
-def match_to_gen(eta: float, phi: float, genparts: Any, pid: int = 11, 
+def match_to_gen(eta: float, phi: float, genparts: Any, pid: int = 11,
                 antipart: bool = True, max_dr: float = MAX_DR, status: int = 1) -> tuple:
     """Match an eta,phi to gen level particle.
     
@@ -169,6 +172,67 @@ def match_to_gen(eta: float, phi: float, genparts: Any, pid: int = 11,
             best_pt = part.pt()
             
     return best_match, best_dr2, best_pt
+
+def in_accepted_eta(eta: float) -> bool:
+    """Apply EB/EE acceptance while removing transition region."""
+    abs_eta = abs(eta)
+    return abs_eta <= EB_ETA_MAX or abs_eta >= EE_ETA_MIN
+
+def passes_loose_id(ele: Any) -> bool:
+    """Best-effort loose-ID for pat::Electron across collections/campaigns."""
+    tried_any = False
+    for id_name in LOOSE_ID_NAMES:
+        try:
+            value = ele.electronID(id_name)
+            tried_any = True
+            if value > 0.5:
+                return True
+        except Exception:
+            continue
+
+    # If no ID map is available in this collection, keep electron so
+    # script remains usable for samples without VID maps embedded.
+    if not tried_any:
+        return True
+    return False
+
+def report_loose_id_availability(all_eles: List[Any]) -> None:
+    """Print one-time check of loose-ID availability in this input file."""
+    if len(all_eles) == 0:
+        logger.warning("Loose-ID check: no electrons available in first inspected event.")
+        return
+
+    ele0 = all_eles[0]
+    found_ids = []
+    missing_ids = []
+    for id_name in LOOSE_ID_NAMES:
+        try:
+            value = ele0.electronID(id_name)
+            found_ids.append((id_name, value))
+        except Exception:
+            missing_ids.append(id_name)
+
+    if found_ids:
+        logger.info("Loose-ID check: available IDs on first electron:")
+        for id_name, value in found_ids:
+            logger.info("  %s = %.3f", id_name, value)
+    if missing_ids:
+        logger.warning("Loose-ID check: missing IDs on first electron: %s", ", ".join(missing_ids))
+
+def get_filter_objects_trigger_event(trigger_evt: Any, filter_name: str) -> List[Any]:
+    """Collect trigger::TriggerObject objects passing a given filter label."""
+    passed = []
+    filter_index = getFilterIndex(trigger_evt, filter_name)
+    if filter_index >= trigger_evt.sizeFilters():
+        return passed
+
+    trigger_keys = trigger_evt.filterKeys(filter_index)
+    for key in trigger_keys:
+        try:
+            passed.append(trigger_evt.getObjects()[key])
+        except Exception as e:
+            logger.debug(f"Error accessing trigger object key {key} for {filter_name}: {e}")
+    return passed
 
 def getFilters(cms_path: str) -> List[str]:
     """Extract filter names from a CMS path sequence.
@@ -218,17 +282,17 @@ def process_events(events: Events, hist_manager: HistogramManager, sequences: Di
         max_events: Maximum number of events to process (-1 for all events)
     """
     # Initialize handles
-    #ele_handle, ele_label = Handle("vector<reco::Electron>"), ("hltEgammaGsfElectronsUnseeded", "", "HLTX")
-    ele_handle, ele_label = Handle("std::vector<trigger::EgammaObject>"), "hltEgammaHLTExtra:Unseeded"
+    ele_handle, ele_label = Handle("vector<pat::Electron>"), "slimmedElectrons"
+    ele_HGC_handle, ele_HGC_label = Handle("vector<pat::Electron>"), "slimmedElectronsHGC"
+    ele_lowpT_handle, ele_lowpT_label = Handle("vector<pat::Electron>"), "slimmedLowPtElectrons"
     hlt_handle, hlt_label = Handle("edm::TriggerResults"), ("TriggerResults", "", "HLTX")
-    hltevt_handle, hltevt_label = Handle("trigger::TriggerEvent"), "hltTriggerSummaryAOD::HLTX"
-    #triggerObjects_handle, triggerObjects_label = Handle("vector<pat::TriggerObjectStandAlone>"), "slimmedPatTrigger"
     triggerObjects_handle, triggerObjects_label = Handle("trigger::TriggerEvent"), "hltTriggerSummaryAOD::HLTX"
-    gen_handle, gen_label = Handle("vector<reco::GenParticle>"), ("genParticles", "", "HLT")
+    gen_handle, gen_label = Handle("vector<reco::GenParticle>"), "prunedGenParticles"
     
     percent_step = 1
     start_time = time.time()
     total_entries = events.size() if max_events == -1 else min(events.size(), max_events)
+    printed_loose_id_report = False
     
     for event_nr, event in enumerate(events):
         if max_events != -1 and event_nr >= max_events:
@@ -247,6 +311,8 @@ def process_events(events: Events, hist_manager: HistogramManager, sequences: Di
         # Get event data
         try:
             event.getByLabel(ele_label, ele_handle)
+            event.getByLabel(ele_HGC_label, ele_HGC_handle)
+            event.getByLabel(ele_lowpT_label, ele_lowpT_handle)
             event.getByLabel(hlt_label, hlt_handle)
             event.getByLabel(triggerObjects_label, triggerObjects_handle)
             event.getByLabel(gen_label, gen_handle)
@@ -254,79 +320,62 @@ def process_events(events: Events, hist_manager: HistogramManager, sequences: Di
             logger.error(f"Error getting event data: {str(e)}")
             continue
             
-        eles = ele_handle.product()
+        eles = list(ele_handle.product()) if ele_handle.isValid() else []
+        eles_hgc = list(ele_HGC_handle.product()) if ele_HGC_handle.isValid() else []
+        eles_lowpt = list(ele_lowpT_handle.product()) if ele_lowpT_handle.isValid() else []
+        all_eles = eles + eles_hgc + eles_lowpt
+        if not printed_loose_id_report:
+            report_loose_id_availability(all_eles)
+            printed_loose_id_report = True
         hlts = hlt_handle.product()
         trigger_objects = triggerObjects_handle.product()
         genobjs = gen_handle.product()
         
-        # Get trigger names from the trigger results
-        trigger_names = event.object().triggerNames(hlts)
-        
         # Process each sequence
         for sequence_name, filter_names in sequences.items():
-            # Process electrons
-            for eg in eles:
-                gen_match_ele, _, gen_pt = match_to_gen(eg.eta(), eg.phi(), genobjs, pid=11)
-                
-                if not gen_match_ele:
+            # Pre-build trigger objects per filter once per event for this sequence
+            filter_to_trigger_objects = {}
+            for filter_name in filter_names:
+                filter_to_trigger_objects[filter_name] = get_filter_objects_trigger_event(trigger_objects, filter_name)
+
+            # Process fake-electron denominator and numerator
+            for eg in all_eles:
+                if eg.pt() < MIN_ELE_PT:
                     continue
-                    
-                # Skip transition region and low pt
-                if (abs(eg.eta()) > EB_ETA_MAX and abs(eg.eta()) < EE_ETA_MIN) or gen_pt < MIN_GEN_PT:
+                if not in_accepted_eta(eg.eta()):
                     continue
-                
-                # Fill denominator histograms once per electron (using first filter as reference)
-                first_filter = filter_names[0] if filter_names else None
-                if first_filter:
-                    # Fill denominator histograms based on eta region
+                if not passes_loose_id(eg):
+                    continue
+
+                # Fake definition: not gen-matched to electron
+                gen_match_ele, _, _ = match_to_gen(eg.eta(), eg.phi(), genobjs, pid=11, max_dr=MAX_DR)
+                if gen_match_ele:
+                    continue
+
+                if abs(eg.eta()) <= EB_ETA_MAX:
+                    hist_manager.histograms[f'{sequence_name}_den_ele_pt_EB'].Fill(eg.pt())
+                if abs(eg.eta()) >= EE_ETA_MIN:
+                    hist_manager.histograms[f'{sequence_name}_den_ele_pt_EE'].Fill(eg.pt())
+                hist_manager.histograms[f'{sequence_name}_den_ele_pt'].Fill(eg.pt())
+                hist_manager.histograms[f'{sequence_name}_den_ele_eta'].Fill(eg.eta())
+                hist_manager.histograms[f'{sequence_name}_den_ele_phi'].Fill(eg.phi())
+
+                for filter_name in filter_names:
+                    matched_objs = match_trig_objs(
+                        eg.eta(),
+                        eg.phi(),
+                        filter_to_trigger_objects[filter_name]
+                    )
+                    if len(matched_objs) == 0:
+                        continue
+
                     if abs(eg.eta()) <= EB_ETA_MAX:
-                        hist_manager.histograms[f'{sequence_name}_den_ele_pt_EB'].Fill(eg.pt())
-                    
+                        hist_manager.histograms[f'{sequence_name}_num_ele_pt_EB_{filter_name}'].Fill(eg.pt())
                     if abs(eg.eta()) >= EE_ETA_MIN:
-                        hist_manager.histograms[f'{sequence_name}_den_ele_pt_EE'].Fill(eg.pt())
-                        
-                    if abs(eg.eta()) <= EB_ETA_MAX or abs(eg.eta()) >= EE_ETA_MIN:
-                        hist_manager.histograms[f'{sequence_name}_den_ele_pt'].Fill(eg.pt())
-                        hist_manager.histograms[f'{sequence_name}_den_ele_eta'].Fill(eg.eta())
-                        hist_manager.histograms[f'{sequence_name}_den_ele_phi'].Fill(eg.phi())
-                
-                # Process each filter in this sequence
-                for ind, filter_name in enumerate(filter_names):
-                    # Find trigger objects that passed this filter
-                    matched_objs = []
-                    
-                    # Get filter index from trigger event
-                    filter_index = getFilterIndex(trigger_objects, filter_name)
-                    
-                    if filter_index < trigger_objects.sizeFilters():
-                        # Get trigger object keys for this filter
-                        trigger_keys = trigger_objects.filterKeys(filter_index)
-                        # Loop through trigger objects for this filter
-                        for key in trigger_keys:
-                            try:
-                                trig_obj = trigger_objects.getObjects()[key]
-                                matched_objs.append(trig_obj)
-                            except Exception as e:
-                                logger.error(f"Error accessing trigger object {key}: {e}")
-                                continue
-                    
-                    # Match trigger objects to electron
-                    matched_objs_before = len(matched_objs)
-                    matched_objs = match_trig_objs(eg.eta(), eg.phi(), matched_objs)
-                    nMatched = len(matched_objs)
-                    
-                    if nMatched > 0:
-                        # Fill numerator histograms based on eta region
-                        if abs(eg.eta()) <= EB_ETA_MAX:
-                            hist_manager.histograms[f'{sequence_name}_num_ele_pt_EB_{filter_name}'].Fill(eg.pt())
-                        
-                        if abs(eg.eta()) >= EE_ETA_MIN:
-                            hist_manager.histograms[f'{sequence_name}_num_ele_pt_EE_{filter_name}'].Fill(eg.pt())
-                            
-                        if abs(eg.eta()) <= EB_ETA_MAX or abs(eg.eta()) >= EE_ETA_MIN:
-                            hist_manager.histograms[f'{sequence_name}_num_ele_pt_{filter_name}'].Fill(eg.pt())
-                            hist_manager.histograms[f'{sequence_name}_num_ele_eta_{filter_name}'].Fill(eg.eta())
-                            hist_manager.histograms[f'{sequence_name}_num_ele_phi_{filter_name}'].Fill(eg.phi())
+                        hist_manager.histograms[f'{sequence_name}_num_ele_pt_EE_{filter_name}'].Fill(eg.pt())
+                    hist_manager.histograms[f'{sequence_name}_num_ele_pt_{filter_name}'].Fill(eg.pt())
+                    hist_manager.histograms[f'{sequence_name}_num_ele_eta_{filter_name}'].Fill(eg.eta())
+                    hist_manager.histograms[f'{sequence_name}_num_ele_phi_{filter_name}'].Fill(eg.phi())
 
 def process_single_file(input_file: str, output_file: str, sequences: Dict[str, List[str]], 
                        pt_bins: array, pt_bins_TurnOn: array, eta_bins: array, phi_bins: array, 
@@ -367,7 +416,7 @@ def process_single_file(input_file: str, output_file: str, sequences: Dict[str, 
         return False
 
 def main():
-    parser = argparse.ArgumentParser(description='E/gamma HLT analyzer - single input file, single output file (Condor-friendly)')
+    parser = argparse.ArgumentParser(description='QCD fake-electron filter efficiency analyzer (single input/output)')
     parser.add_argument('--input-file', required=True, help='Single input ROOT file')
     parser.add_argument("-o", "--output", required=True, help="Output ROOT file (written in current directory)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")

@@ -24,7 +24,7 @@ import os
 # Constants
 EB_ETA_MAX = 1.44
 EE_ETA_MIN = 1.56
-MIN_GEN_PT = 25.
+MIN_EG_PT = 25.
 MAX_DR = 0.1
 
 # Configure logging
@@ -208,6 +208,21 @@ def getFilters(cms_path: str) -> List[str]:
     
     return filts
 
+def get_filter_objects_trigger_event(trigger_evt: Any, filter_name: str) -> List[Any]:
+    """Collect trigger objects that passed a given filter label."""
+    passed = []
+    filter_index = getFilterIndex(trigger_evt, filter_name)
+    if filter_index >= trigger_evt.sizeFilters():
+        return passed
+
+    trigger_keys = trigger_evt.filterKeys(filter_index)
+    for key in trigger_keys:
+        try:
+            passed.append(trigger_evt.getObjects()[key])
+        except Exception as e:
+            logger.debug(f"Error accessing trigger object key {key} for {filter_name}: {e}")
+    return passed
+
 def process_events(events: Events, hist_manager: HistogramManager, sequences: Dict[str, List[str]], max_events: int = -1) -> None:
     """Process events and fill histograms for multiple sequences.
     
@@ -218,11 +233,9 @@ def process_events(events: Events, hist_manager: HistogramManager, sequences: Di
         max_events: Maximum number of events to process (-1 for all events)
     """
     # Initialize handles
-    #ele_handle, ele_label = Handle("vector<reco::Electron>"), ("hltEgammaGsfElectronsUnseeded", "", "HLTX")
-    ele_handle, ele_label = Handle("std::vector<trigger::EgammaObject>"), "hltEgammaHLTExtra:Unseeded"
-    hlt_handle, hlt_label = Handle("edm::TriggerResults"), ("TriggerResults", "", "HLTX")
-    hltevt_handle, hltevt_label = Handle("trigger::TriggerEvent"), "hltTriggerSummaryAOD::HLTX"
-    #triggerObjects_handle, triggerObjects_label = Handle("vector<pat::TriggerObjectStandAlone>"), "slimmedPatTrigger"
+    # Read both trigger-object collections; choose by sequence (seeded/unseeded).
+    ele_unseeded_handle, ele_unseeded_label = Handle("std::vector<trigger::EgammaObject>"), "hltEgammaHLTExtra:Unseeded"
+    ele_l1seeded_handle, ele_l1seeded_label = Handle("std::vector<trigger::EgammaObject>"), "hltEgammaHLTExtra:L1Seeded"
     triggerObjects_handle, triggerObjects_label = Handle("trigger::TriggerEvent"), "hltTriggerSummaryAOD::HLTX"
     gen_handle, gen_label = Handle("vector<reco::GenParticle>"), ("genParticles", "", "HLT")
     
@@ -246,33 +259,37 @@ def process_events(events: Events, hist_manager: HistogramManager, sequences: Di
         
         # Get event data
         try:
-            event.getByLabel(ele_label, ele_handle)
-            event.getByLabel(hlt_label, hlt_handle)
+            event.getByLabel(ele_unseeded_label, ele_unseeded_handle)
+            event.getByLabel(ele_l1seeded_label, ele_l1seeded_handle)
             event.getByLabel(triggerObjects_label, triggerObjects_handle)
             event.getByLabel(gen_label, gen_handle)
         except Exception as e:
             logger.error(f"Error getting event data: {str(e)}")
             continue
             
-        eles = ele_handle.product()
-        hlts = hlt_handle.product()
+        eles_unseeded = ele_unseeded_handle.product() if ele_unseeded_handle.isValid() else []
+        eles_l1seeded = ele_l1seeded_handle.product() if ele_l1seeded_handle.isValid() else []
         trigger_objects = triggerObjects_handle.product()
         genobjs = gen_handle.product()
-        
-        # Get trigger names from the trigger results
-        trigger_names = event.object().triggerNames(hlts)
-        
+
         # Process each sequence
         for sequence_name, filter_names in sequences.items():
+            eles = eles_l1seeded if "L1Seeded" in sequence_name else eles_unseeded
+            # Build passed trigger-object list once per filter per event
+            filter_to_trigger_objects = {
+                filter_name: get_filter_objects_trigger_event(trigger_objects, filter_name)
+                for filter_name in filter_names
+            }
             # Process electrons
             for eg in eles:
-                gen_match_ele, _, gen_pt = match_to_gen(eg.eta(), eg.phi(), genobjs, pid=11)
-                
-                if not gen_match_ele:
+                gen_match_ele, _, _ = match_to_gen(eg.eta(), eg.phi(), genobjs, pid=11)
+
+                # Fake-rate denominator: keep objects NOT matched to prompt electrons.
+                if gen_match_ele:
                     continue
                     
-                # Skip transition region and low pt
-                if (abs(eg.eta()) > EB_ETA_MAX and abs(eg.eta()) < EE_ETA_MIN) or gen_pt < MIN_GEN_PT:
+                # Skip transition region and low reconstructed pT
+                if (abs(eg.eta()) > EB_ETA_MAX and abs(eg.eta()) < EE_ETA_MIN) or eg.pt() < MIN_EG_PT:
                     continue
                 
                 # Fill denominator histograms once per electron (using first filter as reference)
@@ -291,28 +308,12 @@ def process_events(events: Events, hist_manager: HistogramManager, sequences: Di
                         hist_manager.histograms[f'{sequence_name}_den_ele_phi'].Fill(eg.phi())
                 
                 # Process each filter in this sequence
-                for ind, filter_name in enumerate(filter_names):
-                    # Find trigger objects that passed this filter
-                    matched_objs = []
-                    
-                    # Get filter index from trigger event
-                    filter_index = getFilterIndex(trigger_objects, filter_name)
-                    
-                    if filter_index < trigger_objects.sizeFilters():
-                        # Get trigger object keys for this filter
-                        trigger_keys = trigger_objects.filterKeys(filter_index)
-                        # Loop through trigger objects for this filter
-                        for key in trigger_keys:
-                            try:
-                                trig_obj = trigger_objects.getObjects()[key]
-                                matched_objs.append(trig_obj)
-                            except Exception as e:
-                                logger.error(f"Error accessing trigger object {key}: {e}")
-                                continue
-                    
-                    # Match trigger objects to electron
-                    matched_objs_before = len(matched_objs)
-                    matched_objs = match_trig_objs(eg.eta(), eg.phi(), matched_objs)
+                for filter_name in filter_names:
+                    matched_objs = match_trig_objs(
+                        eg.eta(),
+                        eg.phi(),
+                        filter_to_trigger_objects[filter_name]
+                    )
                     nMatched = len(matched_objs)
                     
                     if nMatched > 0:

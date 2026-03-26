@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Run: python3 lastFilterEfficiency_Upgrade.py --input-file inputFile.root -o outFile.root
+# Run: python3 lastFilterEfficiency_Upgrade_TagAndProbe.py --input-file inputFile.root -o outFile.root
 # Condor: one input file → one output file in current dir (so cp *.root finds it). 
 
 from array import array
@@ -25,7 +25,12 @@ import os
 EB_ETA_MAX = 1.44
 EE_ETA_MIN = 1.56
 MIN_GEN_PT = 25.
+MIN_TAG_PT = 35.
+MIN_PROBE_PT = 10.
 MAX_DR = 0.1
+MAX_DR_TAG_PROBE = 0.3
+Z_MASS_LOW = 60.
+Z_MASS_HIGH = 120.
 
 # Configure logging
 logging.basicConfig(
@@ -116,6 +121,21 @@ def getFilterIndex(trigEvt, filterName):
                 return index
     return trigEvt.sizeFilters()
 
+def get_filter_objects(trig_evt: Any, filter_name: str) -> List[Any]:
+    """Return trigger objects that passed a specific filter."""
+    passed_objs = []
+    filter_index = getFilterIndex(trig_evt, filter_name)
+    if filter_index >= trig_evt.sizeFilters():
+        return passed_objs
+
+    trigger_keys = trig_evt.filterKeys(filter_index)
+    for key in trigger_keys:
+        try:
+            passed_objs.append(trig_evt.getObjects()[key])
+        except Exception as e:
+            logger.debug(f"Failed to access trigger object key {key} for {filter_name}: {e}")
+    return passed_objs
+
 def get_genparts(genparts: Any, pid: int = 11, antipart: bool = True, status: int = 1) -> List[Any]:
     """Get a list of gen particles matching the given criteria.
     
@@ -170,6 +190,51 @@ def match_to_gen(eta: float, phi: float, genparts: Any, pid: int = 11,
             
     return best_match, best_dr2, best_pt
 
+def in_accepted_eta(eta: float) -> bool:
+    """Apply EB/EE acceptance with transition veto."""
+    abs_eta = abs(eta)
+    return abs_eta <= EB_ETA_MAX or abs_eta >= EE_ETA_MIN
+
+def build_tag_probe_pairs(eles: Any, genobjs: Any, tag_objs: List[Any]) -> List[tuple]:
+    """Build tag-and-probe pairs using HLT egamma objects and gen-matched DY electrons."""
+    selected = []
+    for eg in eles:
+        gen_match, _, gen_pt = match_to_gen(eg.eta(), eg.phi(), genobjs, pid=11)
+        if not gen_match:
+            continue
+        if not in_accepted_eta(eg.eta()):
+            continue
+        if gen_pt < MIN_PROBE_PT:
+            continue
+        selected.append((eg, gen_pt))
+
+    pairs = []
+    tag_used = set()
+    for i, (tag_candidate, _) in enumerate(selected):
+        if tag_candidate.pt() < MIN_TAG_PT:
+            continue
+        if len(match_trig_objs(tag_candidate.eta(), tag_candidate.phi(), tag_objs)) == 0:
+            continue
+
+        for j, (probe_candidate, probe_gen_pt) in enumerate(selected):
+            if i == j:
+                continue
+            if probe_gen_pt < MIN_GEN_PT:
+                continue
+            if ROOT.reco.deltaR2(tag_candidate.eta(), tag_candidate.phi(), probe_candidate.eta(), probe_candidate.phi()) < MAX_DR_TAG_PROBE * MAX_DR_TAG_PROBE:
+                continue
+
+            mass = (tag_candidate.p4() + probe_candidate.p4()).M()
+            if mass < Z_MASS_LOW or mass > Z_MASS_HIGH:
+                continue
+
+            pair_key = (i, j)
+            if pair_key in tag_used:
+                continue
+            tag_used.add(pair_key)
+            pairs.append((tag_candidate, probe_candidate))
+    return pairs
+
 def getFilters(cms_path: str) -> List[str]:
     """Extract filter names from a CMS path sequence.
     
@@ -208,7 +273,8 @@ def getFilters(cms_path: str) -> List[str]:
     
     return filts
 
-def process_events(events: Events, hist_manager: HistogramManager, sequences: Dict[str, List[str]], max_events: int = -1) -> None:
+def process_events(events: Events, hist_manager: HistogramManager, sequences: Dict[str, List[str]],
+                   tag_filter: str, max_events: int = -1) -> None:
     """Process events and fill histograms for multiple sequences.
     
     Args:
@@ -259,78 +325,46 @@ def process_events(events: Events, hist_manager: HistogramManager, sequences: Di
         trigger_objects = triggerObjects_handle.product()
         genobjs = gen_handle.product()
         
-        # Get trigger names from the trigger results
-        trigger_names = event.object().triggerNames(hlts)
+        tag_passed_objects = get_filter_objects(trigger_objects, tag_filter)
+        if len(tag_passed_objects) == 0:
+            continue
+
+        tag_probe_pairs = build_tag_probe_pairs(eles, genobjs, tag_passed_objects)
+        if len(tag_probe_pairs) == 0:
+            continue
         
         # Process each sequence
         for sequence_name, filter_names in sequences.items():
-            # Process electrons
-            for eg in eles:
-                gen_match_ele, _, gen_pt = match_to_gen(eg.eta(), eg.phi(), genobjs, pid=11)
-                
-                if not gen_match_ele:
+            for _, probe in tag_probe_pairs:
+                if not in_accepted_eta(probe.eta()):
                     continue
-                    
-                # Skip transition region and low pt
-                if (abs(eg.eta()) > EB_ETA_MAX and abs(eg.eta()) < EE_ETA_MIN) or gen_pt < MIN_GEN_PT:
-                    continue
-                
-                # Fill denominator histograms once per electron (using first filter as reference)
-                first_filter = filter_names[0] if filter_names else None
-                if first_filter:
-                    # Fill denominator histograms based on eta region
-                    if abs(eg.eta()) <= EB_ETA_MAX:
-                        hist_manager.histograms[f'{sequence_name}_den_ele_pt_EB'].Fill(eg.pt())
-                    
-                    if abs(eg.eta()) >= EE_ETA_MIN:
-                        hist_manager.histograms[f'{sequence_name}_den_ele_pt_EE'].Fill(eg.pt())
-                        
-                    if abs(eg.eta()) <= EB_ETA_MAX or abs(eg.eta()) >= EE_ETA_MIN:
-                        hist_manager.histograms[f'{sequence_name}_den_ele_pt'].Fill(eg.pt())
-                        hist_manager.histograms[f'{sequence_name}_den_ele_eta'].Fill(eg.eta())
-                        hist_manager.histograms[f'{sequence_name}_den_ele_phi'].Fill(eg.phi())
-                
-                # Process each filter in this sequence
-                for ind, filter_name in enumerate(filter_names):
-                    # Find trigger objects that passed this filter
-                    matched_objs = []
-                    
-                    # Get filter index from trigger event
-                    filter_index = getFilterIndex(trigger_objects, filter_name)
-                    
-                    if filter_index < trigger_objects.sizeFilters():
-                        # Get trigger object keys for this filter
-                        trigger_keys = trigger_objects.filterKeys(filter_index)
-                        # Loop through trigger objects for this filter
-                        for key in trigger_keys:
-                            try:
-                                trig_obj = trigger_objects.getObjects()[key]
-                                matched_objs.append(trig_obj)
-                            except Exception as e:
-                                logger.error(f"Error accessing trigger object {key}: {e}")
-                                continue
-                    
-                    # Match trigger objects to electron
-                    matched_objs_before = len(matched_objs)
-                    matched_objs = match_trig_objs(eg.eta(), eg.phi(), matched_objs)
-                    nMatched = len(matched_objs)
-                    
-                    if nMatched > 0:
-                        # Fill numerator histograms based on eta region
-                        if abs(eg.eta()) <= EB_ETA_MAX:
-                            hist_manager.histograms[f'{sequence_name}_num_ele_pt_EB_{filter_name}'].Fill(eg.pt())
-                        
-                        if abs(eg.eta()) >= EE_ETA_MIN:
-                            hist_manager.histograms[f'{sequence_name}_num_ele_pt_EE_{filter_name}'].Fill(eg.pt())
-                            
-                        if abs(eg.eta()) <= EB_ETA_MAX or abs(eg.eta()) >= EE_ETA_MIN:
-                            hist_manager.histograms[f'{sequence_name}_num_ele_pt_{filter_name}'].Fill(eg.pt())
-                            hist_manager.histograms[f'{sequence_name}_num_ele_eta_{filter_name}'].Fill(eg.eta())
-                            hist_manager.histograms[f'{sequence_name}_num_ele_phi_{filter_name}'].Fill(eg.phi())
+
+                if abs(probe.eta()) <= EB_ETA_MAX:
+                    hist_manager.histograms[f'{sequence_name}_den_ele_pt_EB'].Fill(probe.pt())
+                if abs(probe.eta()) >= EE_ETA_MIN:
+                    hist_manager.histograms[f'{sequence_name}_den_ele_pt_EE'].Fill(probe.pt())
+                hist_manager.histograms[f'{sequence_name}_den_ele_pt'].Fill(probe.pt())
+                hist_manager.histograms[f'{sequence_name}_den_ele_eta'].Fill(probe.eta())
+                hist_manager.histograms[f'{sequence_name}_den_ele_phi'].Fill(probe.phi())
+
+                for filter_name in filter_names:
+                    passed_objs = get_filter_objects(trigger_objects, filter_name)
+                    if len(passed_objs) == 0:
+                        continue
+                    if len(match_trig_objs(probe.eta(), probe.phi(), passed_objs)) == 0:
+                        continue
+
+                    if abs(probe.eta()) <= EB_ETA_MAX:
+                        hist_manager.histograms[f'{sequence_name}_num_ele_pt_EB_{filter_name}'].Fill(probe.pt())
+                    if abs(probe.eta()) >= EE_ETA_MIN:
+                        hist_manager.histograms[f'{sequence_name}_num_ele_pt_EE_{filter_name}'].Fill(probe.pt())
+                    hist_manager.histograms[f'{sequence_name}_num_ele_pt_{filter_name}'].Fill(probe.pt())
+                    hist_manager.histograms[f'{sequence_name}_num_ele_eta_{filter_name}'].Fill(probe.eta())
+                    hist_manager.histograms[f'{sequence_name}_num_ele_phi_{filter_name}'].Fill(probe.phi())
 
 def process_single_file(input_file: str, output_file: str, sequences: Dict[str, List[str]], 
                        pt_bins: array, pt_bins_TurnOn: array, eta_bins: array, phi_bins: array, 
-                       max_events: int = -1) -> bool:
+                       tag_filter: str, max_events: int = -1) -> bool:
     """Process a single input file and create output histograms.
     
     Args:
@@ -352,7 +386,7 @@ def process_single_file(input_file: str, output_file: str, sequences: Dict[str, 
         
         # Process events from this single file
         events = Events([input_file])
-        process_events(events, hist_manager, sequences, max_events)
+        process_events(events, hist_manager, sequences, tag_filter, max_events)
         
         # Write output for this file
         output_root_file = TFile(output_file, 'recreate')
@@ -367,11 +401,13 @@ def process_single_file(input_file: str, output_file: str, sequences: Dict[str, 
         return False
 
 def main():
-    parser = argparse.ArgumentParser(description='E/gamma HLT analyzer - single input file, single output file (Condor-friendly)')
+    parser = argparse.ArgumentParser(description='E/gamma HLT analyzer with DY tag-and-probe (single input/output)')
     parser.add_argument('--input-file', required=True, help='Single input ROOT file')
     parser.add_argument("-o", "--output", required=True, help="Output ROOT file (written in current directory)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("-n", "--max-events", type=int, default=-1, help="Maximum number of events to process (-1 for all events)")
+    parser.add_argument("--tag-filter", default="hltEle32WPTightGsfTrackIsoL1SeededFilter",
+                        help="Filter name used for tag leg preselection")
     
     args = parser.parse_args()
     
@@ -400,6 +436,7 @@ def main():
         sys.exit(1)
     
     print(f"🎯 Input: {input_file} → Output: {args.output}")
+    print(f"🏷️ Tag filter: {args.tag_filter}")
     
     # Setup histogram binning arrays
     # Custom pt binning: 0-50, 50-100, then steps of 100 till 3000, then steps of 250 till 4000
@@ -447,6 +484,7 @@ def main():
         pt_bins_TurnOn,
         eta_bins,
         phi_bins,
+        args.tag_filter,
         args.max_events,
     )
     if not success:
