@@ -131,23 +131,23 @@ for project_name, project_cfg in cfg['project'].items():
                         cmd_tmp = cmd_tmp.replace('output_Phase2_HLT.root', '$WORKDIR/output_Phase2_HLT.root')
                         cmd_tmp = cmd_tmp.replace('tnpNtupler.root', '$WORKDIR/tnpNtupler.root')
 
-                    if i == 0:
-                        cmd_tmp += f" --filein {infile} "
-
-                    if 'cmsDriver' in cmd_tmp:
-                        if i == 0:
-                            # First step → apply skipEvents
-                            cmd_tmp += (
-                                f" --customise_commands "
-                                f"'process.maxEvents.input=cms.untracked.int32({args.nEvent});"
-                                f"process.source.skipEvents=cms.untracked.uint32({skip_events})'"
-                            )
-                        else:
-                            # Later steps → NO skipEvents
-                            cmd_tmp += (
-                                f" --customise_commands "
-                                f"'process.maxEvents.input=cms.untracked.int32({args.nEvent})'"
-                            )
+#                    if i == 0:
+#                        cmd_tmp += f" --filein {infile} "
+#
+#                    if 'cmsDriver' in cmd_tmp:
+#                        if i == 0:
+#                            # First step → apply skipEvents
+#                            cmd_tmp += (
+#                               f" --customise_commands "
+#                                f"'process.maxEvents.input=cms.untracked.int32({args.nEvent});"
+#                                f"process.source.skipEvents=cms.untracked.uint32({skip_events})'"
+#                            )
+#                        else:
+#                            # Later steps → NO skipEvents
+#                            cmd_tmp += (
+#                                f" --customise_commands "
+#                                f"'process.maxEvents.input=cms.untracked.int32({args.nEvent})'"
+#                            )
 
                     f.write(f"echo 'Running step {i+1}'\n")
                     f.write(f"{cmd_tmp}\n\n")

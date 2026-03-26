@@ -1,0 +1,22 @@
+cmssw-dir: /afs/cern.ch/work/s/ssaumya/private/Egamma/Upgrade/InefficiencyChecls/3rdFeb_2026/CMSSW_16_0_2/src/
+eos-dir: /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/GENSIM_samples/
+
+project:
+
+  ZprimeToEE:
+    GT: "auto:phase2_realistic_T33"
+    process:
+      - curl -s -k https://cms-pdmv-prod.web.cern.ch/mcm/public/restapi/requests/get_fragment/TSG-Phase2Spring24GS-00099 --retry 3 --create-dirs -o Configuration/GenProduction/python/TSG-Phase2Spring24GS-00099-fragment.py
+      - scram b -j 10
+      - cmsDriver.py Configuration/GenProduction/python/TSG-Phase2Spring24GS-00099-fragment.py --step GEN,SIM --beamspot HLLHC14TeV --customise SLHCUpgradeSimulations/Configuration/aging.customise_aging_1000,Configuration/DataProcessing/Utils.addMonitoring --customise_commands "process.RandomNumberGeneratorService.generator.initialSeed = 100000 + __JOBID__" --conditions auto:phase2_realistic_T33 --geometry ExtendedRun4D110 --era Phase2C17I13M9 --eventcontent FEVTDEBUGHLT --datatier GEN-SIM --mc --no_exec --python_filename rerunGENSIM_cfg.py --fileout file:output_GENSIM.root -n __NEVENTS__
+      - cmsRun rerunGENSIM_cfg.py
+      - cmsDriver.py Phase2 --step DIGI:pdigi_valid,L1TrackTrigger,L1,DIGI2RAW --filein file:output_GENSIM.root --pileup 'AVE_200_BX_25ns' --pileup_input "dbs:/MinBias_TuneCP5_14TeV-pythia8/Phase2Spring24GS-140X_mcRun4_realistic_v4-v1/GEN-SIM" --customise SLHCUpgradeSimulations/Configuration/aging.customise_aging_1000,SimGeneral/MixingModule/customiseStoredTPConfig.higherPtTP,Configuration/DataProcessing/Utils.addMonitoring,L1Trigger/Configuration/customisePhase2FEVTDEBUGHLT.customisePhase2FEVTDEBUGHLT,L1Trigger/Configuration/customisePhase2TTOn110.customisePhase2TTOn110 --conditions auto:phase2_realistic_T33 --geometry ExtendedRun4D110 --era Phase2C17I13M9 --eventcontent FEVTDEBUGHLT --datatier GEN-SIM-DIGI-RAW --mc --no_exec --python_filename rerunDIGI_cfg.py --fileout file:output_DIGI.root -n __NEVENTS__
+      - cmsRun rerunDIGI_cfg.py
+      - cmsDriver.py Phase2 --step L1,L1TrackTrigger --filein file:output_DIGI.root --customise SLHCUpgradeSimulations/Configuration/aging.customise_aging_1000,Configuration/DataProcessing/Utils.addMonitoring,L1Trigger/Configuration/customisePhase2FEVTDEBUGHLT.customisePhase2FEVTDEBUGHLT,L1Trigger/Configuration/customisePhase2TTOn110.customisePhase2TTOn110 --inputCommands="keep *, drop l1tPFJets_*_*_*, drop l1tTrackerMuons_l1tTkMuonsGmt*_*_HLT" --outputCommands="drop l1tTrackerMuons_l1tTkMuonsGmt*_*_HLT" --conditions auto:phase2_realistic_T33 --geometry ExtendedRun4D110 --era Phase2C17I13M9 --eventcontent FEVTDEBUGHLT --datatier GEN-SIM-DIGI-RAW --mc --no_exec --python_filename rerunL1_cfg.py --fileout file:output_Phase2_L1T.root -n __NEVENTS__
+      - cmsRun rerunL1_cfg.py
+      - cmsDriver.py Phase2 --step L1P2GT,HLT:75e33 --filein file:output_Phase2_L1T.root --processName=HLTX --customise SLHCUpgradeSimulations/Configuration/aging.customise_aging_1000,HLTrigger/Configuration/customizeHLTforEGamma.customiseEGammaMenuDev --inputCommands='keep *, drop *_hlt*_*_HLT, drop triggerTriggerFilterObjectWithRefs_l1t*_*_HLT' --conditions auto:phase2_realistic_T33 --geometry ExtendedRun4D110 --era Phase2C17I13M9 --eventcontent FEVTDEBUGHLT --mc --no_exec --python_filename rerunHLT_cfg.py --fileout file:output_Phase2_HLT.root -n __NEVENTS__
+      - cmsRun rerunHLT_cfg.py
+      - python3 /afs/cern.ch/work/s/ssaumya/private/Egamma/Upgrade/InefficiencyChecls/3rdFeb_2026/CMSSW_16_0_2/src/makeNtuples_Phase2_GenMatched.py output_Phase2_HLT.root --max-events __NEVENTS__ -o tnpNtupler.root
+
+    storefile:
+      - tnpNtupler.root        

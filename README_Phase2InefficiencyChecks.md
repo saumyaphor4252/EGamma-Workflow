@@ -16,6 +16,7 @@ condor_submit Farm/condor_jobs.sub
 ### Plotting
 ```
 python3 ../plot_Phase2_EGM_Sigma_PtRanges.py /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/ZprimeToEE_ntuple.root SigmaPtBins
+
 python3 plot_Phase2_EGM_Variables.py \
   /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/ZprimeToEE_ntuple.root \
   /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/QCD_ntuple.root  \
@@ -30,7 +31,8 @@ python3 CutOptimization.py --signal /eos/cms/store/group/phys_egamma/ssaumya/Pha
 ```
 ## For Trigger Efficinecy Checks
 ```
-
-
+cd PlotHists/
+# Update the input files in Inputs.py
+python3 plotHist.py
 
 ```

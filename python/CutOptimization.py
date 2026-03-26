@@ -224,8 +224,8 @@ def _get_pt_val_weight(tree, pt_var, var, weight_var):
 
 
 print(f"Optimizing on: {var}")
-pt_centers = []
-cuts = []
+pt_centers = []  # List of center pT bin for fitting a+b*pT
+cuts = []        # List of the variable cut values for Target signal efficinecy in that pT bin
 roc_curves = []  # list of (fpr_arr, tpr_arr, label)
 dist_bins = []   # list of (ptmin, ptmax, sig_vals, bkg_vals, cut)
 
@@ -292,8 +292,15 @@ for (ptmin, ptmax) in pt_bins:
 
 # Fit
 graph = ROOT.TGraph(len(pt_centers))
-for i in range(len(pt_centers)):
-    graph.SetPoint(i, pt_centers[i], cuts[i])
+print("\n=== pT center vs cut points ===")
+out_txt = "pt_cut_points.txt"
+with open(out_txt, "w") as f:
+    f.write("# idx  pt_center_GeV  cut\n")
+    for i in range(len(pt_centers)):
+        graph.SetPoint(i, pt_centers[i], cuts[i])
+        print(f"i={i:2d}  pt_center={pt_centers[i]:7.2f}  cut={cuts[i]:.6f}")
+        f.write(f"{i:3d}  {pt_centers[i]:10.4f}  {cuts[i]:.8f}\n")
+print(f"Saved points to {out_txt}")
 fit = ROOT.TF1("fit", "[0] + [1]*x", 30, 200)
 graph.Fit(fit, "Q")
 a = fit.GetParameter(0)
@@ -372,54 +379,6 @@ if roc_curves:
     canvas.SaveAs("ROC_curves.png")
     print("\n   ROC curves saved to ROC_curves.png")
     canvas.Close()
-
-    # Zoomed ROC canvas
-    canvas2 = ROOT.TCanvas("roc_zoomed", "ROC (zoomed): Background rejection vs Signal efficiency", 700, 600)
-    canvas2.SetLeftMargin(0.12)
-    canvas2.SetRightMargin(0.04)
-    canvas2.SetTopMargin(0.06)
-    canvas2.SetBottomMargin(0.12)
-    canvas2.SetGridx(True)
-    canvas2.SetGridy(True)
-    leg2 = ROOT.TLegend(0.18, 0.18, 0.52, 0.38)
-    leg2.SetBorderSize(1)
-    leg2.SetFillStyle(0)
-    leg2.SetTextSize(0.035)
-    graphs2 = []
-    first2 = True
-    for idx, (fpr, tpr, label) in enumerate(roc_curves):
-        bkg_rej = 1.0 - np.asarray(fpr, dtype=float)
-        sig_eff = np.asarray(tpr, dtype=float)
-        g2 = ROOT.TGraph(len(sig_eff), sig_eff, bkg_rej)
-        g2.SetLineColor(colors[idx % len(colors)])
-        g2.SetLineWidth(2)
-        g2.SetMarkerColor(colors[idx % len(colors)])
-        g2.SetMarkerStyle(markers[idx % len(markers)])
-        g2.SetMarkerSize(0.8)
-        graphs2.append(g2)
-        if first2:
-            g2.SetTitle(";Signal efficiency;Background rejection")
-            g2.Draw("APL")
-            g2.GetHistogram().SetMinimum(0.0)
-            g2.GetHistogram().SetMaximum(1.0)
-            g2.GetHistogram().GetXaxis().SetRangeUser(0.9, 1.0)
-            first2 = False
-        else:
-            g2.Draw("PL same")
-        leg2.AddEntry(g2, label, "lp")
-    leg2.Draw()
-    pave2 = ROOT.TPaveText(0.18, 0.42, 0.55, 0.58, "NDC")
-    pave2.SetBorderSize(0)
-    pave2.SetFillStyle(0)
-    pave2.SetTextFont(42)
-    pave2.SetTextSize(0.032)
-    pave2.AddText(f"Variable: {var}")
-    pave2.AddText("Zoom: 0.9 #leq sig eff #leq 1.0")
-    pave2.Draw()
-    canvas2._keepalive = [leg2, pave2] + graphs2
-    canvas2.SaveAs("ROC_curves_zoomed.png")
-    print("   ROC curves (zoomed) saved to ROC_curves_zoomed.png")
-    canvas2.Close()
 
 # Distribution plots
 if dist_bins:

@@ -2,6 +2,7 @@ import os
 import yaml
 import subprocess
 import argparse
+import math
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Prepare Condor jobs for HLT rerun")
@@ -10,7 +11,7 @@ parser.add_argument("--jobFlavour", type=str, default="tomorrow",
 parser.add_argument("--n", type=int, default=10, help="Number of DAS files per shell script")
 parser.add_argument("--farm", type=str, default="Farm",
                     help="farm directory")
-parser.add_argument("--nEvent", type=int, default=-1)
+parser.add_argument("--nEvent", type=int, default=-1, help="Number of events per job")
 parser.add_argument("--config", type=str)
 parser.add_argument("--proxy", type=str, default=None)
 args = parser.parse_args()
@@ -52,58 +53,119 @@ for project_name, project_cfg in cfg['project'].items():
     for ds in project_cfg['dataset']:
         all_input_files.extend(get_das_files(ds))
     
-    start_idx = 0
-    end_idx = min(args.n, len(all_input_files))
-    bunch_idx = 0
-    while (end_idx < (len(all_input_files))):
-        script_name = os.path.join(farm_dir, f"run_{project_name}_{bunch_idx}.sh")
-        workspace = f"$TMPDIR/Job_{project_name}_{bunch_idx}"
-        print(f"creating {script_name}")
-        with open(script_name, "w") as f:
-            f.write("#!/bin/bash\n")
-            f.write("export X509_USER_PROXY=$1\n")
-    #        f.write("voms-proxy-info -all\n")
-    #        f.write("voms-proxy-info -all -file $1\n")
-            f.write(f"WORKDIR={workspace}\n")
-            f.write(f"mkdir -p $WORKDIR\n")
-            f.write("echo 'Using TMPDIR=' $WORKDIR\n")
-            f.write(f"cd {cmssw_dir}\n")
-            f.write("eval `scramv1 runtime -sh`\n\n")
-            f.write("cd $WORKDIR\n")
-            for file_idx in range(start_idx, end_idx):
+    job_idx = 0
+
+    for file_idx, infile in enumerate(all_input_files):
+
+        # assume number of events in file (can also put this in YAML)
+        events_per_file = project_cfg.get("eventsPerFile", 1000) #ZpToEE 100000
+        #events_per_file = project_cfg.get("eventsPerFile", 874) # QCD_Pt-300ToInf 79896
+        #events_per_file = project_cfg.get("eventsPerFile", 1591) # QCD_Pt-15To3000 147961        
+
+        jobs_per_file = math.ceil(events_per_file / args.nEvent)
+
+        for j in range(jobs_per_file):
+
+            skip_events = j * args.nEvent
+
+            script_name = os.path.join(farm_dir, f"run_{project_name}_{job_idx}.sh")
+            workspace = f"$TMPDIR/Job_{project_name}_{job_idx}"
+
+            print(f"creating {script_name}")
+
+            with open(script_name, "w") as f:
+
+                f.write("#!/bin/bash\n")
+                f.write("set -e\n\n")
+
+                f.write("export X509_USER_PROXY=$1\n")
+
+                f.write(f"WORKDIR={workspace}\n")
+                f.write("mkdir -p $WORKDIR\n")
+                f.write("echo 'Using TMPDIR=' $WORKDIR\n\n")
+
+                f.write(f"cd {cmssw_dir}\n")
+                f.write("eval `scramv1 runtime -sh`\n\n")
+
+                f.write("cd $WORKDIR\n\n")
+
                 for i, cmd in enumerate(project_cfg['process']):
-                    cmd_tmp = cmd.replace("file:", f"file:$WORKDIR/")
+
+                    cmd_tmp = cmd.replace("file:", "file:$WORKDIR/")
+
                     if "TnPTreeProducer" in cmd_tmp:
                         cmd_tmp = cmd_tmp.replace('outputFile=file:', 'outputFile=')
+
+                    if "python3" in cmd_tmp:
+                        cmd_tmp = cmd_tmp.replace('output_Phase2_HLT.root', '$WORKDIR/output_Phase2_HLT.root')
+                        cmd_tmp = cmd_tmp.replace('tnpNtupler.root', '$WORKDIR/tnpNtupler.root')
+
                     if i == 0:
-                       cmd_tmp += f" --filein {all_input_files[file_idx]} "
+                        cmd_tmp += f" --filein {infile} "
+
+#                    if 'cmsDriver' in cmd_tmp:
+#                        cmd_tmp += (
+#                            f" --customise_commands "
+#                            f"'process.maxEvents.input=cms.untracked.int32({args.nEvent});"
+#                            f"process.source.skipEvents=cms.untracked.uint32({skip_events})'"
+#                        )
                     if 'cmsDriver' in cmd_tmp:
-                       cmd_tmp += f" --customise_commands 'process.maxEvents.input=cms.untracked.int32({args.nEvent})' "
+                        if i == 0:
+                            # First step → apply skipEvents
+                            cmd_tmp += (
+                                f" --customise_commands "
+                                f"'process.maxEvents.input=cms.untracked.int32({args.nEvent});"
+                                f"process.source.skipEvents=cms.untracked.uint32({skip_events})'"
+                            )
+                        else:
+                            # Later steps → NO skipEvents
+                            cmd_tmp += (
+                                f" --customise_commands "
+                                f"'process.maxEvents.input=cms.untracked.int32({args.nEvent})'"
+                            )
+
                     f.write(f"echo 'Running step {i+1}'\n")
-                    f.write(f"{cmd_tmp}\n")
-        
+                    f.write(f"{cmd_tmp}\n\n")
+
                 for storefile in project_cfg.get('storefile', []):
-                    eos_path = os.path.join(project_eos_dir, storefile.replace(".root", f"_{file_idx}.root"))
-                    f.write(f"xrdcp $WORKDIR/{storefile} root://eosuser.cern.ch/{eos_path}\n")
-                f.write("rm $WORKDIR/*.root\n")
-    
-        os.chmod(script_name, 0o755)
-        shell_scripts.append(script_name)
-        end_idx += args.n
-        start_idx += args.n
-        bunch_idx += 1
+
+                    eos_path = os.path.join(
+                        project_eos_dir,
+                        storefile.replace(".root", f"_{job_idx}.root")
+                    )
+
+                    f.write(
+                        f"xrdcp $WORKDIR/{storefile} root://eosuser.cern.ch/{eos_path}\n"
+                    )
+
+                f.write("rm -f $WORKDIR/*.root\n")
+
+            os.chmod(script_name, 0o755)
+            shell_scripts.append(script_name)
+
+            job_idx += 1
 
 
 sub_file = f"{args.farm}/condor_jobs.sub"
-condor_str = "executable = $(filename)\n"
+
+condor_str = ""
+condor_str += "executable = $(filename)\n"
+
 if args.proxy is not None:
     condor_str += f"Proxy_path = {args.proxy}\n"
     condor_str += "arguments = $(Proxy_path)\n"
-condor_str += "output = $Fp(filename)$(filename)hlt.stdout\n"
-condor_str += "error = $Fp(filename)$(filename)hlt.stderr\n"
-condor_str += "log = $Fp(filename)$(filename)hlt.log\n"
-condor_str += f'+JobFlavour = "{args.jobFlavour}"\n'
-condor_str += f"queue filename matching ({args.farm}/*/*.sh)"
-condor_file = open(sub_file, "w")
-condor_file.write(condor_str)
 
+condor_str += "output = $Fp(filename)$(filename)_hlt.stdout\n"
+condor_str += "error = $Fp(filename)$(filename)_hlt.stderr\n"
+condor_str += "log = $Fp(filename)$(filename)_hlt.log\n"
+
+condor_str += f'+JobFlavour = "{args.jobFlavour}"\n'
+
+# Request enough resources
+#condor_str += "request_disk = 80000\n"
+#condor_str += "request_memory = 4000\n"
+
+condor_str += f"queue filename matching ({args.farm}/*/*.sh)"
+
+with open(sub_file, "w") as condor_file:
+    condor_file.write(condor_str)

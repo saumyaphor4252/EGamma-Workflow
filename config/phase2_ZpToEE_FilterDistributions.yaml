@@ -1,5 +1,5 @@
 cmssw-dir: /afs/cern.ch/work/s/ssaumya/private/Egamma/Upgrade/InefficiencyChecls/3rdFeb_2026/CMSSW_16_0_2/src/
-eos-dir: /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/Efficinecy/Version1/
+eos-dir: /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/Efficinecy/sigma_FilterDistributions/
 
 project:
 
@@ -12,7 +12,7 @@ project:
       - cmsRun rerunL1_cfg.py
       - cmsDriver.py Phase2 -s L1P2GT,HLT:75e33 --processName=HLTX --conditions auto:phase2_realistic_T33 --geometry ExtendedRun4D110 --era Phase2C17I13M9 --eventcontent FEVTDEBUGHLT --customise SLHCUpgradeSimulations/Configuration/aging.customise_aging_1000,HLTrigger/Configuration/customizeHLTforEGamma.customiseEGammaMenuDev --filein file:output_Phase2_L1T.root --inputCommands='keep *, drop *_hlt*_*_HLT, drop triggerTriggerFilterObjectWithRefs_l1t*_*_HLT' --mc --no_exec --python_filename rerunHLT_cfg.py --fileout file:output_Phase2_HLT.root
       - cmsRun rerunHLT_cfg.py
-      - python3 /afs/cern.ch/work/s/ssaumya/private/Egamma/Upgrade/InefficiencyChecls/3rdFeb_2026/CMSSW_16_0_2/src/lastFilterEfficiency_Upgrade.py --input-file output_Phase2_HLT.root -n 100000 -o tnpNtupler.root
+      - python3 /afs/cern.ch/work/s/ssaumya/private/Egamma/Upgrade/InefficiencyChecls/3rdFeb_2026/CMSSW_16_0_2/src/extractSigma2vvSigma2ww_PerFilter.py --input-file output_Phase2_HLT.root --output sigma_per_filter.root --max-events -1
 
     storefile:
-      - tnpNtupler.root        
+      - sigma_per_filter.root 
