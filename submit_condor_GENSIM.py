@@ -1,4 +1,5 @@
 import os
+import re
 import yaml
 import argparse
 import subprocess
@@ -47,6 +48,47 @@ def substitute_job_tokens(cmd: str, job_idx: int) -> str:
     out = out.replace("__NEVENTS__", str(n_events))
     out = out.replace("__JOBID__", str(job_idx))
     return out
+
+
+def per_job_cfg_in_workdir(job_idx: int, cfg_basename: str) -> str:
+    """Unique cfg path under $WORKDIR (expanded on worker) — avoids AFS races on shared names."""
+    return f"$WORKDIR/j{job_idx}_{cfg_basename}"
+
+
+def rewrite_cmsdriver_python_filename(cmd: str, job_idx: int) -> str:
+    """Put --python_filename under $WORKDIR with a job-specific prefix (cmsCondor-style isolation)."""
+
+    def repl(m):
+        name = m.group(1)
+        if name.startswith("$WORKDIR/") or name.startswith("/"):
+            return m.group(0)
+        return f"--python_filename {per_job_cfg_in_workdir(job_idx, name)}"
+
+    return re.sub(r"--python_filename\s+(\S+\.py)", repl, cmd)
+
+
+def wrap_cmsrun_for_workdir(cmd: str, cmssw_dir: str, job_idx: int) -> str:
+    """
+    cmsDriver --fileout file:$WORKDIR/... is not always embedded as an absolute path in the
+    generated cfg; PoolOutput may write relative to cwd. Run cmsRun from $WORKDIR with the cfg
+    in $WORKDIR (same basename as --python_filename after rewrite_cmsdriver_python_filename).
+    """
+    stripped = cmd.strip()
+    if not stripped.startswith("cmsRun "):
+        return cmd
+    parts = stripped.split()
+    if len(parts) < 2:
+        return cmd
+    cfg = parts[1]
+    if cfg.startswith("/") or cfg.startswith("$WORKDIR/"):
+        cfg_path = cfg
+    elif cfg.endswith(".py"):
+        cfg_path = per_job_cfg_in_workdir(job_idx, cfg)
+    else:
+        cfg_path = os.path.join(cmssw_dir, cfg)
+    rest = parts[2:]
+    inner = " ".join(["cmsRun", cfg_path] + rest)
+    return f"cd $WORKDIR && {inner}"
 
 
 def run_prepare_once(commands, cmssw_dir: str) -> None:
@@ -104,9 +146,8 @@ for project_name, project_cfg in cfg["project"].items():
             f.write("mkdir -p $WORKDIR\n")
             f.write("echo 'Using TMPDIR=' $WORKDIR\n\n")
 
-            # Stay in the CMSSW area for scram/cmsDriver/cmsRun. Do NOT cd to $WORKDIR first:
-            # scram/cmsDriver must see the release (SCRAM fails in /tmp).
-            # Output ROOT files use file:$WORKDIR/... from the YAML substitutions below.
+            # Stay in the CMSSW area for scram/cmsDriver. cmsRun is wrapped to `cd $WORKDIR &&`
+            # so PoolOutput paths match file:$WORKDIR/... (see wrap_cmsrun_for_workdir).
             f.write(f"cd {cmssw_dir}\n")
             f.write("eval `scramv1 runtime -sh`\n\n")
 
@@ -122,6 +163,9 @@ for project_name, project_cfg in cfg["project"].items():
                         "output_Phase2_HLT.root", "$WORKDIR/output_Phase2_HLT.root"
                     )
                     cmd_tmp = cmd_tmp.replace("tnpNtupler.root", "$WORKDIR/tnpNtupler.root")
+
+                cmd_tmp = rewrite_cmsdriver_python_filename(cmd_tmp, job_idx)
+                cmd_tmp = wrap_cmsrun_for_workdir(cmd_tmp, cmssw_dir, job_idx)
 
                 f.write(f"echo 'Running step {i+1}'\n")
                 f.write(f"{cmd_tmp}\n\n")
@@ -156,6 +200,10 @@ condor_str += "error = $Fp(filename)$(filename)_hlt.stderr\n"
 condor_str += "log = $Fp(filename)$(filename)_hlt.log\n"
 
 condor_str += f'+JobFlavour = "{args.jobFlavour}"\n'
+
+# Disk: bare KB is easy to under-request; Phase2 chain needs many GB on $TMPDIR.
+condor_str += "request_disk = 25 GB\n"
+condor_str += "request_memory = 8000\n"
 
 condor_str += f"queue filename matching ({args.farm}/*/*.sh)\n"
 
