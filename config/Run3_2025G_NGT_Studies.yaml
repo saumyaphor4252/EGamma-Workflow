@@ -1,0 +1,33 @@
+cmssw-dir: /afs/cern.ch/work/s/ssaumya/private/Egamma/NGT_Jessica/CMSSW_15_0_15_patch4/src/
+eos-dir: /eos/cms/store/group/phys_egamma/ssaumya/NGT_Jessica/ 
+
+project:
+    Reference:
+      GT: 150X_dataRun3_HLT_v1
+
+      process:
+        - cmsDriver.py --conditions 150X_dataRun3_HLT_v1 --data --datatier RECO --era Run3_2025 --eventcontent RECO --scenario pp --fileout file:hltOutput_RECO_Reference.root --process MYHLT --python_filename hlt_ReRun_Config_Reference.py --step HLT:2025G -n -1
+        - cmsDriver.py stepMINI -s PAT --conditions 150X_dataRun3_Prompt_v1 --datatier MINIAOD --eventcontent MINIAOD --geometry DB:Extended --era Run3_2025 --hltProcess MYHLT  --filein file:hltOutput_RECO_Reference.root --fileout file:stepMINI_Reference.root --python_filename makeMini_cfg_Reference.py -n -1
+        - cd /afs/cern.ch/work/s/ssaumya/private/Egamma/NGT_Jessica/CMSSW_15_0_15_patch4/src/
+        - eval `scramv1 runtime -sh`
+        - cmsRun /afs/cern.ch/work/s/ssaumya/private/Egamma/NGT_Jessica/CMSSW_15_0_15_patch4/src/EgammaAnalysis/TnPTreeProducer/python/TnPTreeProducer_cfg.py isMC=False isAOD=False era=2025 doTrigger=True inputFiles=file:stepMINI_Reference.root outputFile=file:tnpNtuple_Reference.root
+        - cd /afs/cern.ch/work/s/ssaumya/private/Egamma/NGT_Jessica/CMSSW_15_0_15_patch4/src/
+        - eval `scramv1 runtime -sh`
+        - cd $WORKDIR
+      storefile:
+        - tnpNtuple_Reference.root
+
+    Target:
+      GT: 150X_dataRun3_NGT_v2
+
+      process:
+        - cmsDriver.py --conditions 150X_dataRun3_NGT_v2 --data --datatier RECO --era Run3_2025 --eventcontent RECO --scenario pp --fileout file:hltOutput_RECO_Target.root --process MYHLT --python_filename hlt_ReRun_Config_Target.py --step HLT:2025G -n -1
+        - cmsDriver.py stepMINI -s PAT --conditions 150X_dataRun3_Prompt_v1 --datatier MINIAOD --eventcontent MINIAOD --geometry DB:Extended --era Run3_2025 --hltProcess MYHLT  --filein file:hltOutput_RECO_Target.root --fileout file:stepMINI_Target.root --python_filename makeMini_cfg_Target.py -n -1
+        - cd /afs/cern.ch/work/s/ssaumya/private/Egamma/NGT_Jessica/CMSSW_15_0_15_patch4/src/
+        - eval `scramv1 runtime -sh`
+        - cmsRun /afs/cern.ch/work/s/ssaumya/private/Egamma/NGT_Jessica/CMSSW_15_0_15_patch4/src/EgammaAnalysis/TnPTreeProducer/python/TnPTreeProducer_cfg.py isMC=False isAOD=False era=2025 doTrigger=True inputFiles=file:stepMINI_Target.root outputFile=file:tnpNtuple_Target.root
+        - cd /afs/cern.ch/work/s/ssaumya/private/Egamma/NGT_Jessica/CMSSW_15_0_15_patch4/src/
+        - eval `scramv1 runtime -sh`
+        - cd $WORKDIR
+      storefile:
+        - tnpNtuple_Target.root 
