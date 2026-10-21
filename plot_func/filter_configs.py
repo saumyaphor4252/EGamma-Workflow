@@ -131,6 +131,19 @@ FILTERS = {
         'hltDiEle2312IsoBestGsfChi2L1SeededFilter',
         'hltDiEle2312IsoGsfTrackIsoFromL1TracksL1SeededFilter',
         'hltDiEle2312IsoGsfTrackIsoL1SeededFilter'
+    ],
+    "HLTEle115NonIsoL1Seeded": [
+        'hltEGL1SeedsForSingleEleNonIsolatedFilter',
+        'hltEG115EtL1SeededFilter',
+        'hltEle115NonIsoClusterShapeL1SeededFilter',
+        'hltEle115NonIsoClusterShapeSigmavvL1SeededFilter',
+        'hltEle115NonIsoClusterShapeSigmawwL1SeededFilter',
+        'hltEle115NonIsoHgcalHEL1SeededFilter',
+        'hltEle115NonIsoHEL1SeededFilter',
+        'hltEle115NonIsoPixelMatchL1SeededFilter',
+        'hltEle115NonIsoPMS2L1SeededFilter',
+        'hltEle115NonIsoGsfDetaL1SeededFilter',
+        'hltEle115NonIsoGsfDphiL1SeededFilter',
     ]
 }
 

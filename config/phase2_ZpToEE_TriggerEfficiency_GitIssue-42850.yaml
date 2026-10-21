@@ -1,0 +1,18 @@
+cmssw-dir: /afs/cern.ch/work/s/ssaumya/private/Egamma/Upgrade_PR42850/TestRecipe/CMSSW_13_1_0/src/ 
+eos-dir: /eos/cms/store/group/phys_egamma/ssaumya/Phase2_Inefficiency/Upgrade_PR42850/CMSSW_13_1_0/
+
+project:
+
+  ZprimeToEE:
+    dataset:
+      - /ZprimeToEE_M-6000_TuneCP5_14TeV-pythia8/Phase2Spring23DIGIRECOMiniAOD-PU200_Trk1GeV_131X_mcRun4_realistic_v5-v1/GEN-SIM-DIGI-RAW-MINIAOD
+    GT: auto:phase2_realistic_T21
+    process:
+      - cmsDriver.py Phase2 -s RAW2DIGI,L1:RUNP2GT --conditions auto:phase2_realistic_T21 --geometry Extended2026D95 --era Phase2C17I13M9 --eventcontent FEVTDEBUGHLT --datatier GEN-SIM-DIGI-RAW-MINIAOD --customise SLHCUpgradeSimulations/Configuration/aging.customise_aging_1000,Configuration/DataProcessing/Utils.addMonitoring,L1Trigger/Configuration/customisePhase2.addHcalTriggerPrimitives,L1Trigger/Configuration/customisePhase2FEVTDEBUGHLT.customisePhase2FEVTDEBUGHLT --nThreads 1 --mc --inputCommands='keep *, drop l1tPFJets_*_*_*' --outputCommands='keep *P2GT*_*_*_*, drop l1tPFJets_*_*_*' --python_filename rerunL1_cfg.py --no_exec --fileout file:output_Phase2_L1T.root
+      - cmsRun rerunL1_cfg.py
+      - cmsDriver.py Phase2 -s HLT:75e33 --processName=HLTX --conditions auto:phase2_realistic_T21 --geometry Extended2026D95 --era Phase2C17I13M9 --customise SLHCUpgradeSimulations/Configuration/aging.customise_aging_1000,HLTrigger/Configuration/customizeHLTforEGamma.customiseEGammaMenuDev --eventcontent FEVTDEBUGHLT --filein file:output_Phase2_L1T.root --inputCommands='keep *, drop *_hlt*_*_HLT' --nThreads 1 --no_exec --python_filename rerunHLT_cfg.py --fileout file:output_Phase2_HLT.root
+      - cmsRun rerunHLT_cfg.py
+      - python3 /afs/cern.ch/work/s/ssaumya/private/Egamma/Upgrade_PR42850/TestRecipe/CMSSW_13_1_0/src/lastFilterEfficiency_Upgrade.py --input-file output_Phase2_HLT.root -n 100000 -o tnpNtupler.root
+
+    storefile:
+      - tnpNtupler.root        
